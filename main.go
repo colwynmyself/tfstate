@@ -56,6 +56,10 @@ func (m boxerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.tui.UpdateSize(msg)
 	}
+
+	for _, childModel := range m.tui.ModelMap {
+		childModel.Update(msg)
+	}
 	return m, nil
 }
 func (m boxerModel) View() string {
@@ -79,6 +83,7 @@ func (s stringer) View() string                            { return s.String() }
 type stateModel struct {
 	content   string
 	statefile string
+	active    bool
 	ready     bool
 	viewport  viewport.Model
 }
@@ -145,9 +150,23 @@ func (m stateModel) View() string {
 }
 
 func (m stateModel) headerView() string {
-	title := titleStyle.Render(m.statefile)
+	titleText := m.statefile
+	if m.active {
+		titleText += " (ACTIVE)"
+	}
+	title := titleStyle.Render(titleText)
 	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(title)))
-	return lipgloss.JoinHorizontal(lipgloss.Center, title, line)
+
+	style := lipgloss.NewStyle()
+	// TODO: Make this prettier
+	if m.active {
+		style = style.
+			Bold(true).
+			Foreground(lipgloss.Color("#000")).
+			Background(lipgloss.Color("#EEE"))
+	}
+
+	return style.Render(lipgloss.JoinHorizontal(lipgloss.Center, title, line))
 }
 
 func (m stateModel) footerView() string {
@@ -184,7 +203,7 @@ func main() {
 	}
 
 	mStates := []stateModel{}
-	for _, statefile := range statefiles {
+	for i, statefile := range statefiles {
 		stateString, err := getStateStringForFile(statefile)
 		if err != nil {
 			log.Printf("Error reading statefile %s: %s\n", statefile, err)
@@ -193,11 +212,10 @@ func main() {
 		mState := stateModel{
 			content:   stateString,
 			statefile: statefile,
+			active:    i == 0,
 		}
 		mStates = append(mStates, mState)
 	}
-
-	lower := stringer("use q or ctrl+c to quit")
 
 	// layout-tree defintion
 	mBoxer := boxerModel{tui: boxer.Boxer{}}
@@ -225,7 +243,7 @@ func main() {
 			{
 				Children: boxerNodes,
 			},
-			mBoxer.tui.CreateLeaf("lower", lower),
+			mBoxer.tui.CreateLeaf("lower", stringer("use q or ctrl+c to quit")),
 		},
 	}
 	p := tea.NewProgram(
