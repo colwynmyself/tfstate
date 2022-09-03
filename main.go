@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	boxer "github.com/treilik/bubbleboxer"
 )
 
 // You generally won't need this unless you're processing stuff with
@@ -33,29 +35,65 @@ var (
 	}()
 )
 
-type model struct {
+// ---------------------
+// Boxer Model Interface
+// ---------------------
+type boxerModel struct {
+	tui boxer.Boxer
+}
+
+func (m boxerModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m boxerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		}
+	case tea.WindowSizeMsg:
+		m.tui.UpdateSize(msg)
+	}
+	return m, nil
+}
+func (m boxerModel) View() string {
+	return m.tui.View()
+}
+
+type stringer string
+
+func (s stringer) String() string {
+	return string(s)
+}
+
+// satisfy the tea.Model interface
+func (s stringer) Init() tea.Cmd                           { return nil }
+func (s stringer) Update(msg tea.Msg) (tea.Model, tea.Cmd) { return s, nil }
+func (s stringer) View() string                            { return s.String() }
+
+// ---------------------
+// State Model Interface
+// ---------------------
+type stateModel struct {
 	content   string
 	statefile string
 	ready     bool
 	viewport  viewport.Model
 }
 
-func (m model) Init() tea.Cmd {
+func (m stateModel) Init() tea.Cmd {
 	return nil
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m stateModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var (
 		cmd  tea.Cmd
 		cmds []tea.Cmd
 	)
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if k := msg.String(); k == "ctrl+c" || k == "q" || k == "esc" {
-			return m, tea.Quit
-		}
-
 	case tea.WindowSizeMsg:
 		headerHeight := lipgloss.Height(m.headerView())
 		footerHeight := lipgloss.Height(m.footerView())
@@ -99,25 +137,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m model) View() string {
+func (m stateModel) View() string {
 	if !m.ready {
 		return "\n  Initializing..."
 	}
 	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), m.viewport.View(), m.footerView())
 }
 
-func (m model) headerView() string {
+func (m stateModel) headerView() string {
 	title := titleStyle.Render(m.statefile)
 	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(title)))
 	return lipgloss.JoinHorizontal(lipgloss.Center, title, line)
 }
 
-func (m model) footerView() string {
+func (m stateModel) footerView() string {
 	info := infoStyle.Render(fmt.Sprintf("%3.f%%", m.viewport.ScrollPercent()*100))
 	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(info)))
 	return lipgloss.JoinHorizontal(lipgloss.Center, line, info)
 }
 
+// ---------------
+// Everything else
+// ---------------
 func max(a, b int) int {
 	if a > b {
 		return a
@@ -125,27 +166,76 @@ func max(a, b int) int {
 	return b
 }
 
-func main() {
-	statefile := "terraform.tfstate"
+func getStateStringForFile(statefile string) (string, error) {
 	stateBytes, err := exec.Command("terraform", "show", statefile).Output()
 	if err != nil {
-		fmt.Printf("Error reading terraform state: %v", err)
-		os.Exit(1)
+		// Maybe I'll deal with this one day
+		return "", err
 	}
-	stateString := string(stateBytes)
+	return string(stateBytes), nil
+}
 
-	m := model{
-		content:   stateString,
-		statefile: statefile,
+func main() {
+	// I'm using a slice here because this will eventually be dynamic when we pull an arbitrary number of versions from
+	// remote state.
+	statefiles := []string{
+		"terraform.tfstate",
+		"terraform.tfstate.backup",
+	}
+
+	mStates := []stateModel{}
+	for _, statefile := range statefiles {
+		stateString, err := getStateStringForFile(statefile)
+		if err != nil {
+			log.Printf("Error reading statefile %s: %s\n", statefile, err)
+			os.Exit(1)
+		}
+		mState := stateModel{
+			content:   stateString,
+			statefile: statefile,
+		}
+		mStates = append(mStates, mState)
+	}
+
+	lower := stringer("use q or ctrl+c to quit")
+
+	// layout-tree defintion
+	mBoxer := boxerModel{tui: boxer.Boxer{}}
+	boxerNodes := []boxer.Node{}
+	// Probably combine this with the loop above to save some cycles, this is just explicit for now since I'm learning how
+	// to write good golang.
+	for _, mState := range mStates {
+		boxerNodes = append(boxerNodes, mBoxer.tui.CreateLeaf(mState.statefile, mState))
+	}
+
+	mBoxer.tui.LayoutTree = boxer.Node{
+		// orientation
+		VerticalStacked: true,
+		// spacing
+		SizeFunc: func(_ boxer.Node, widthOrHeight int) []int {
+			return []int{
+				// since this node is vertical stacked return the height partioning since the width stays for all children fixed
+				widthOrHeight - 1,
+				1,
+				// make also sure that the amount of the returned ints match the amount of children:
+				// in this case two, but in more complex cases read the amount of the chilren from the len(boxer.Node.Children)
+			}
+		},
+		Children: []boxer.Node{
+			{
+				Children: boxerNodes,
+			},
+			mBoxer.tui.CreateLeaf("lower", lower),
+		},
 	}
 	p := tea.NewProgram(
-		m,
+		mBoxer,
 		tea.WithAltScreen(),       // use the full size of the terminal in its "alternate screen buffer"
 		tea.WithMouseCellMotion(), // turn on mouse support so we can track the mouse wheel
 	)
-
+	p.EnterAltScreen()
 	if err := p.Start(); err != nil {
-		fmt.Println("could not run program:", err)
-		os.Exit(1)
+		fmt.Println(err)
 	}
+	p.ExitAltScreen()
 }
