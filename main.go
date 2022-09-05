@@ -104,6 +104,11 @@ func scrollState(m boxerModel, direction string) (boxerModel, error) {
 }
 
 func (m boxerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	for name, childModel := range m.tui.ModelMap {
+		updatedChildModel, _ := childModel.Update(msg)
+		m.tui.ModelMap[name] = updatedChildModel
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -120,11 +125,6 @@ func (m boxerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.WindowSizeMsg:
 		m.tui.UpdateSize(msg)
-	}
-
-	// TODO: Fix this, it doesn't work
-	for _, childModel := range m.tui.ModelMap {
-		childModel.Update(msg)
 	}
 
 	return m, nil
