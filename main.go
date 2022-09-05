@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -46,20 +47,86 @@ func (m boxerModel) Init() tea.Cmd {
 	return nil
 }
 
+func scrollState(m boxerModel, direction string) (boxerModel, error) {
+	// TODO: Make this more efficient, it's pretty bad right now
+	mStates := []stateModel{}
+	for _, mCheck := range m.tui.ModelMap {
+		if mState, ok := mCheck.(stateModel); ok {
+			mStates = append(mStates, mState)
+		}
+	}
+	sort.SliceStable(mStates, func(i, j int) bool {
+		return mStates[i].index < mStates[j].index
+	})
+
+	for i, mState := range mStates {
+		if mState.active {
+			nextIndex := i
+			if direction == "right" {
+				nextIndex = i + 1
+			} else if direction == "left" {
+				nextIndex = i - 1
+			} else {
+				log.Panicf("%s is an invalid direction", direction)
+			}
+
+			maxIndex := len(mStates) - 1
+			if nextIndex < 0 {
+				if direction == "right" {
+					// This is a weird case that should never happen
+					nextIndex = 0
+				} else {
+					nextIndex = maxIndex
+				}
+			}
+			if nextIndex >= len(mStates) {
+				if direction == "right" {
+					nextIndex = 0
+				} else {
+					// This is a weird case that should never happen
+					nextIndex = maxIndex
+				}
+			}
+			nextState := mStates[nextIndex]
+			nextState.active = true
+			mState.active = false
+
+			// Point at the new object on the ModelMap to update our state. I should really figure out if I can do this
+			// with references and change the mState object in place.
+			m.tui.ModelMap[nextState.statefile] = nextState
+			m.tui.ModelMap[mState.statefile] = mState
+
+			break
+		}
+	}
+
+	return m, nil
+}
+
 func (m boxerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "right", "left":
+			m, err := scrollState(m, msg.String())
+			if err != nil {
+				// TODO: Do something better here
+				panic("Error scolling states!")
+			}
+
+			return m, nil
 		}
 	case tea.WindowSizeMsg:
 		m.tui.UpdateSize(msg)
 	}
 
+	// TODO: Fix this, it doesn't work
 	for _, childModel := range m.tui.ModelMap {
 		childModel.Update(msg)
 	}
+
 	return m, nil
 }
 func (m boxerModel) View() string {
@@ -81,6 +148,7 @@ func (s stringer) View() string                            { return s.String() }
 // State Model Interface
 // ---------------------
 type stateModel struct {
+	index     int
 	content   string
 	statefile string
 	active    bool
@@ -210,6 +278,7 @@ func main() {
 			os.Exit(1)
 		}
 		mState := stateModel{
+			index:     i,
 			content:   stateString,
 			statefile: statefile,
 			active:    i == 0,
