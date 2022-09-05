@@ -105,8 +105,12 @@ func scrollState(m boxerModel, direction string) (boxerModel, error) {
 
 func (m boxerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	for name, childModel := range m.tui.ModelMap {
-		updatedChildModel, _ := childModel.Update(msg)
-		m.tui.ModelMap[name] = updatedChildModel
+		if mState, ok := childModel.(stateModel); ok {
+			if mState.active {
+				updatedChildModel, _ := mState.Update(msg)
+				m.tui.ModelMap[name] = updatedChildModel
+			}
+		}
 	}
 
 	switch msg := msg.(type) {
